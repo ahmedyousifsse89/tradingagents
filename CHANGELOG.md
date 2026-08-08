@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Broker execution layer (`tradingagents.execution`)** with an Alpaca
+  adapter, so a 5-tier rating can be turned into real orders. Ratings map to
+  target weights of account equity (Buy 8% / Overweight 4% / Hold unchanged /
+  Underweight 2% / Sell 0% by default); a reconciler orders only the
+  difference between target and the position Alpaca reports, which makes
+  re-runs idempotent rather than position-doubling. Order sizing is
+  arithmetic — the Trader agent's free-text `position_sizing` is never parsed
+  into share counts.
+- **Order guards and journal.** Blocked accounts, closed markets, sub-minimum
+  and oversized orders, a daily order cap, and duplicate `client_order_id`s
+  are rejected before submission, identically in dry-run and live mode. Every
+  intent is appended to `~/.tradingagents/cache/execution/journal.jsonl`.
+- **Four independent switches before real money moves**: `execution_enabled`
+  (default off), `execution_dry_run` (default on), `alpaca_live` (default
+  off), and the `TRADINGAGENTS_ALPACA_ALLOW_LIVE` environment opt-in checked
+  inside the broker. Alpaca credentials read from `ALPACA_API_KEY_ID` /
+  `ALPACA_API_SECRET_KEY`.
+- **`execution` install extra** (`pip install -e ".[execution]"`) for
+  `alpaca-py`, kept optional so the research framework installs without a
+  trading SDK.
+- **`TRADINGAGENTS_*` overrides for the execution caps**: enabled/dry-run/live
+  flags, journal path, max position weight, max gross exposure, minimum order
+  notional, and maximum orders per day.
+
 ## [0.2.5] — 2026-05-11
 
 ### Added

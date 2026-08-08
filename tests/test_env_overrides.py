@@ -96,3 +96,34 @@ def test_unknown_env_var_is_ignored(monkeypatch):
         TRADINGAGENTS_NONEXISTENT_KEY="oops",
     )
     assert "nonexistent_key" not in dc.DEFAULT_CONFIG
+
+
+def test_execution_defaults_are_the_safe_ones(monkeypatch):
+    """Every execution switch must default to the setting that moves no money."""
+    dc = _reload_with_env(monkeypatch)
+    assert dc.DEFAULT_CONFIG["execution_enabled"] is False
+    assert dc.DEFAULT_CONFIG["execution_dry_run"] is True
+    assert dc.DEFAULT_CONFIG["alpaca_live"] is False
+    assert dc.DEFAULT_CONFIG["execution_journal_path"] is None
+
+
+def test_execution_overrides_coerce_by_default_type(monkeypatch):
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_EXECUTION_ENABLED="true",
+        TRADINGAGENTS_EXECUTION_DRY_RUN="false",
+        TRADINGAGENTS_ALPACA_LIVE="1",
+        TRADINGAGENTS_EXECUTION_JOURNAL="/tmp/journal.jsonl",
+        TRADINGAGENTS_MAX_POSITION_WEIGHT="0.05",
+        TRADINGAGENTS_MAX_GROSS_EXPOSURE="0.5",
+        TRADINGAGENTS_MIN_ORDER_NOTIONAL="25",
+        TRADINGAGENTS_MAX_ORDERS_PER_DAY="5",
+    )
+    assert dc.DEFAULT_CONFIG["execution_enabled"] is True
+    assert dc.DEFAULT_CONFIG["execution_dry_run"] is False
+    assert dc.DEFAULT_CONFIG["alpaca_live"] is True
+    assert dc.DEFAULT_CONFIG["execution_journal_path"] == "/tmp/journal.jsonl"
+    assert dc.DEFAULT_CONFIG["execution_max_position_weight"] == 0.05
+    assert dc.DEFAULT_CONFIG["execution_max_gross_exposure"] == 0.5
+    assert dc.DEFAULT_CONFIG["execution_min_order_notional"] == 25.0
+    assert dc.DEFAULT_CONFIG["execution_max_orders_per_day"] == 5

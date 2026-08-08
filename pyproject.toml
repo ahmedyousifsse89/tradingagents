@@ -32,6 +32,13 @@ dependencies = [
     "yfinance>=0.2.63",
 ]
 
+[project.optional-dependencies]
+# Broker execution. Kept optional so the research framework installs and
+# tests without a trading SDK present.
+execution = [
+    "alpaca-py>=0.42.0",
+]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 

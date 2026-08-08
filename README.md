@@ -253,6 +253,87 @@ ta = TradingAgentsGraph(config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 ```
 
+## Broker Execution (Alpaca)
+
+> **Trading real money is irreversible.** This layer can place live orders from
+> LLM-derived ratings. Run it against Alpaca's paper endpoint until you have
+> reviewed enough dry runs to trust the sizing, and treat every default below as
+> a floor for caution rather than a recommendation. The framework remains
+> research software and is [not financial, investment, or trading advice](https://tauric.ai/disclaimer/).
+
+`tradingagents.execution` turns the 5-tier rating from `.propagate()` into
+broker orders. Install the optional dependency:
+
+```bash
+pip install -e ".[execution]"
+```
+
+### How a rating becomes an order
+
+1. **Sizing.** Each rating maps to a target fraction of account equity —
+   Buy 8%, Overweight 4%, Hold (leave alone), Underweight 2%, Sell 0% by
+   default. Sizes are computed arithmetically; the Trader agent's free-text
+   `position_sizing` field is deliberately never parsed into share counts.
+2. **Reconciliation.** The engine compares target value against the position
+   Alpaca actually reports and orders only the difference. Re-running the same
+   ticker and date after a fill therefore produces no orders instead of
+   doubling the position.
+3. **Guards.** Blocked accounts, closed markets, dust-sized rebalances,
+   oversized orders, a daily order cap, and duplicate `client_order_id`s are
+   all rejected before submission. The same guards run in dry-run mode, so a
+   clean dry run is evidence about what a live run would do.
+4. **Journal.** Every intent — submitted, rejected, or dry-run — is appended to
+   `~/.tradingagents/cache/execution/journal.jsonl`.
+
+### Four switches guard real money
+
+Money can only move when **all** of these are set the permissive way:
+
+| Switch | Default | Effect |
+|---|---|---|
+| `execution_enabled` | `False` | Master switch; submission raises without it |
+| `execution_dry_run` | `True` | Plans and journals orders, never sends them |
+| `alpaca_live` | `False` | Selects the live endpoint over paper |
+| `TRADINGAGENTS_ALPACA_ALLOW_LIVE` | unset | Environment opt-in checked inside the broker |
+
+Credentials come from `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY`.
+
+### Usage
+
+```python
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.execution import ExecutionEngine, describe_results
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+config = DEFAULT_CONFIG.copy()
+ta = TradingAgentsGraph(config=config)
+_, rating = ta.propagate("NVDA", "2026-01-15")   # e.g. "Buy"
+
+# Dry run by default: plans and journals, submits nothing.
+engine = ExecutionEngine(config)
+results = engine.execute_decision("NVDA", rating, trade_date="2026-01-15")
+print(describe_results(results))
+```
+
+Rate several tickers in one pass so the gross-exposure cap sees the whole book:
+
+```python
+ratings = {t: ta.propagate(t, "2026-01-15")[1] for t in ("NVDA", "AMD", "TSLA")}
+results = engine.execute_ratings(ratings, trade_date="2026-01-15")
+```
+
+To submit against the **paper** account, set `execution_enabled=True` and
+`execution_dry_run=False`, leaving `alpaca_live` at `False`.
+
+Tune the caps in `default_config.py` or via `TRADINGAGENTS_MAX_POSITION_WEIGHT`,
+`TRADINGAGENTS_MAX_GROSS_EXPOSURE`, `TRADINGAGENTS_MIN_ORDER_NOTIONAL`, and
+`TRADINGAGENTS_MAX_ORDERS_PER_DAY`.
+
+### What this layer does not do
+
+There is no scheduler, no portfolio context fed back into the agent prompts,
+and no drawdown kill switch. Runs are invoked manually, one pass at a time.
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
