@@ -24,7 +24,17 @@ from .broker import (
 from .engine import ExecutionDisabled, ExecutionEngine, describe_results
 from .guard import OrderGuard
 from .journal import ExecutionJournal, default_journal_path
+from .portfolio_context import fetch_portfolio_context, render_portfolio_context
 from .reconciler import client_order_id, plan_orders
+from .risk import (
+    HALT_DAILY_DRAWDOWN,
+    HALT_MANUAL,
+    HALT_TOTAL_DRAWDOWN,
+    KillSwitch,
+    RiskState,
+    default_risk_state_path,
+    kill_switch_from_config,
+)
 from .sizing import DEFAULT_TARGET_WEIGHTS, TargetWeightPolicy
 
 __all__ = [
@@ -35,6 +45,9 @@ __all__ = [
     "STATUS_ERROR",
     "STATUS_REJECTED",
     "STATUS_SUBMITTED",
+    "HALT_DAILY_DRAWDOWN",
+    "HALT_MANUAL",
+    "HALT_TOTAL_DRAWDOWN",
     "AccountSnapshot",
     "Broker",
     "DEFAULT_TARGET_WEIGHTS",
@@ -42,13 +55,19 @@ __all__ = [
     "ExecutionEngine",
     "ExecutionJournal",
     "ExecutionPlan",
+    "KillSwitch",
     "OrderGuard",
     "OrderIntent",
     "OrderResult",
     "PositionSnapshot",
+    "RiskState",
     "TargetWeightPolicy",
     "client_order_id",
     "default_journal_path",
+    "default_risk_state_path",
     "describe_results",
+    "fetch_portfolio_context",
+    "kill_switch_from_config",
     "plan_orders",
+    "render_portfolio_context",
 ]

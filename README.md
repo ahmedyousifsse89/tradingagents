@@ -329,10 +329,166 @@ Tune the caps in `default_config.py` or via `TRADINGAGENTS_MAX_POSITION_WEIGHT`,
 `TRADINGAGENTS_MAX_GROSS_EXPOSURE`, `TRADINGAGENTS_MIN_ORDER_NOTIONAL`, and
 `TRADINGAGENTS_MAX_ORDERS_PER_DAY`.
 
-### What this layer does not do
+### Portfolio context
 
-There is no scheduler, no portfolio context fed back into the agent prompts,
-and no drawdown kill switch. Runs are invoked manually, one pass at a time.
+When a broker is passed to `TradingAgentsGraph(broker=...)`, live holdings,
+cash, and exposure are rendered into the Trader and Portfolio Manager prompts.
+The agents then know whether a name is already held, already at its cap, or not
+held at all — so "Hold, already at target" becomes an informed answer rather
+than a coincidence. This never affects order sizing; the reconciler owns that,
+arithmetically, from broker data. A broker outage degrades the prompt to empty
+rather than failing the run.
+
+### Kill switch
+
+The kill switch tracks an equity high-water mark and halts all trading when the
+account falls too far below it. Every order is rejected while halted, in
+dry-run mode too.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `risk_kill_switch_enabled` | `True` | Master switch for drawdown protection |
+| `risk_max_total_drawdown` | `0.15` | Halt at 15% below the all-time high-water mark |
+| `risk_max_daily_drawdown` | `0.05` | Halt at 5% below the current UTC day's open |
+| `risk_flatten_on_halt` | `False` | Whether a halt also liquidates every position |
+
+A tripped switch **never clears itself** — not on recovery, not on restart.
+Resuming is a human action (dashboard button or `KillSwitch.resume()`), and it
+rebases the high-water mark to current equity so the switch does not
+immediately re-trip on the drawdown it was just cleared for. State lives in
+`~/.tradingagents/cache/execution/risk_state.json`; a corrupt state file reads
+as halted rather than as permission to trade.
+
+## Running as a Bot
+
+> Everything below turns the framework into software that trades while nobody
+> is watching. Read the four switches above first, run in dry-run until the
+> journal shows orders you would have placed yourself, then paper, then live.
+
+`tradingagents.runner` adds unattended operation and `tradingagents.server`
+adds the HTTP control plane the dashboard talks to:
+
+```bash
+pip install -e ".[server]"
+```
+
+### The run cycle
+
+One pass does three things in order:
+
+1. **Kill switch first.** A halted account skips analysis entirely, so a halt
+   costs nothing in LLM spend.
+2. **Analyse every ticker.** A ticker that raises is recorded in the run's
+   `errors` and the pass continues — the other tickers have already been paid
+   for.
+3. **Execute once, as a batch.** All ratings go to the engine in a single call
+   so the gross-exposure cap sees the whole book instead of approving each name
+   in ignorance of the others.
+
+Only one run happens at a time. A scheduled fire landing on a run in progress
+is dropped, not queued: two concurrent passes would both read the same
+pre-trade positions and each size orders as if the other had not happened.
+
+```python
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.runner import TradingRunner
+
+runner = TradingRunner(DEFAULT_CONFIG.copy())
+runner.watchlist.save(["NVDA", "AMD", "TSLA"])
+record = runner.run_once()
+print(record.status, record.ratings)
+```
+
+### Scheduling
+
+```bash
+TRADINGAGENTS_SCHEDULE_ENABLED=true
+TRADINGAGENTS_SCHEDULE_CRON="30 13 * * 1-5"   # 13:30 UTC weekdays, pre-US-open
+TRADINGAGENTS_SCHEDULE_TIMEZONE=UTC
+TRADINGAGENTS_RUN_MAX_TICKERS=10              # cost and duration cap per pass
+```
+
+Missed fires coalesce into one run rather than stampeding the broker after an
+outage.
+
+### Control API
+
+`python -m tradingagents.server.main` serves the API and owns the scheduler
+thread in the same process, so scheduled and API-triggered runs contend for the
+same lock and can never overlap.
+
+`TRADINGAGENTS_API_TOKEN` is required — the API can place trades and refuses to
+start without it. Every route except `/health` needs `Authorization: Bearer …`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness probe, unauthenticated, exposes nothing |
+| GET | `/api/status` | Mode, account, kill switch, next scheduled run |
+| GET | `/api/positions` | Open positions with unrealised P&L |
+| GET/PUT | `/api/watchlist` | Read or replace the watchlist |
+| DELETE | `/api/watchlist/{ticker}` | Remove one ticker |
+| GET/POST | `/api/runs` | Run history, or trigger a run (202; 409 if busy) |
+| GET | `/api/runs/{run_id}` | One run with decisions and orders |
+| GET | `/api/orders` | The order journal |
+| GET | `/api/risk` | Kill-switch state |
+| POST | `/api/risk/halt` · `/api/risk/resume` | Manual halt and resume |
+| POST | `/api/flatten` | Close all positions; body must be `{"confirm":"FLATTEN"}` |
+
+## Deploying
+
+The bot runs on Railway; the dashboard runs on Vercel. They are separate
+deploys sharing one secret.
+
+### 1. Railway (the bot)
+
+Deploy this repository — `railway.json` selects `Dockerfile.server` and health
+checks `/health`.
+
+**Attach a volume mounted at `/data`.** Without it the container filesystem is
+ephemeral: the order journal, run history, watchlist, decision memory, and the
+kill switch's high-water mark all reset on every redeploy, and a halted bot
+would come back armed.
+
+**Keep replicas at 1.** Each replica runs its own scheduler and its own
+in-process lock, so two replicas means two runs per cron tick against one
+account.
+
+Set the service variables from [`.env.server.example`](.env.server.example). At
+minimum: an LLM provider key, `TRADINGAGENTS_API_TOKEN`, `ALPACA_API_KEY_ID`,
+and `ALPACA_API_SECRET_KEY`. Leave every execution gate at its default for the
+first deploy.
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))'   # API token
+```
+
+### 2. Vercel (the dashboard)
+
+Import the same repository with **Root Directory** set to `web`, then set the
+four variables in [`web/.env.example`](web/.env.example):
+`TRADINGAGENTS_API_URL` (the Railway URL), `TRADINGAGENTS_API_TOKEN` (identical
+to Railway's), `DASHBOARD_PASSWORD`, and `SESSION_SECRET`.
+
+None of them are `NEXT_PUBLIC_`. The browser calls same-origin proxy routes
+that attach the bearer token server-side, so the token never reaches the client
+and there is no CORS to configure. See [`web/README.md`](web/README.md).
+
+### 3. Going live, in order
+
+1. Deploy with the defaults. Add tickers, hit **Run now**, and read the journal
+   — every intent is recorded with the size it would have used.
+2. When the dry-run orders look like orders you would have placed, set
+   `TRADINGAGENTS_EXECUTION_ENABLED=true` and
+   `TRADINGAGENTS_EXECUTION_DRY_RUN=false`. This trades the **paper** account.
+3. Turn on the scheduler and leave it on paper for as long as it takes to see
+   it behave across a full cycle.
+4. Only then set `TRADINGAGENTS_ALPACA_LIVE=true` **and**
+   `TRADINGAGENTS_ALPACA_ALLOW_LIVE=true`. Both are required; either one alone
+   keeps you on paper.
+
+Running costs are dominated by LLM calls: one pass is a full multi-agent
+analysis per ticker, so `TRADINGAGENTS_RUN_MAX_TICKERS` and the cron frequency
+are your spend controls.
 
 ## Contributing
 

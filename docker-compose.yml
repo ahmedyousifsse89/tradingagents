@@ -1,4 +1,23 @@
 services:
+  # Control API + scheduler — the same image Railway runs. Use this to
+  # exercise the dashboard against a local backend before deploying.
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    env_file:
+      - .env
+    environment:
+      - TRADINGAGENTS_CACHE_DIR=/data/cache
+      - TRADINGAGENTS_RESULTS_DIR=/data/logs
+      - TRADINGAGENTS_MEMORY_LOG_PATH=/data/memory/trading_memory.md
+    ports:
+      - "8000:8000"
+    volumes:
+      - tradingagents_server_data:/data
+    profiles:
+      - server
+
   tradingagents:
     build: .
     env_file:
@@ -32,4 +51,5 @@ services:
 
 volumes:
   tradingagents_data:
+  tradingagents_server_data:
   ollama_data:

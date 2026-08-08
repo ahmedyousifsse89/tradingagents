@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence
 from tradingagents.default_config import DEFAULT_CONFIG
 
 from .broker import (
+    SELL,
     STATUS_DRY_RUN,
     STATUS_DUPLICATE,
     STATUS_REJECTED,
@@ -32,7 +33,8 @@ from .broker import (
 )
 from .guard import OrderGuard
 from .journal import ExecutionJournal, default_journal_path
-from .reconciler import plan_orders
+from .reconciler import client_order_id, plan_orders
+from .risk import KillSwitch, kill_switch_from_config
 from .sizing import TargetWeightPolicy
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ class ExecutionEngine:
         config: Optional[dict] = None,
         broker: Optional[Broker] = None,
         journal: Optional[ExecutionJournal] = None,
+        kill_switch: Optional[KillSwitch] = None,
     ):
         self.config = dict(config or DEFAULT_CONFIG)
         self.dry_run = bool(self.config.get("execution_dry_run", True))
@@ -77,6 +80,7 @@ class ExecutionEngine:
             ),
         )
 
+        self.kill_switch = kill_switch or kill_switch_from_config(self.config)
         self._broker = broker
 
     # ---- broker ------------------------------------------------------
@@ -127,10 +131,74 @@ class ExecutionEngine:
         for note in execution_plan.skipped:
             logger.info("execution plan skipped: %s", note)
 
+        halt_detail = self._halt_detail(execution_plan.account.equity)
         market_open = self.broker.is_market_open()
+
         results: List[OrderResult] = []
         for intent in execution_plan.intents:
-            result = self._execute_one(intent, execution_plan, market_open)
+            if halt_detail:
+                # Uniform with every other guard: a halt rejects in dry-run
+                # mode too, so a dry run keeps mirroring what live would do.
+                result = OrderResult(
+                    intent=intent, status=STATUS_REJECTED, detail=halt_detail
+                )
+            else:
+                result = self._execute_one(intent, execution_plan, market_open)
+            self.journal.append(result.to_record())
+            results.append(result)
+        return results
+
+    def _halt_detail(self, equity: float) -> str:
+        """Update the kill switch with current equity; return why it blocks, if it does."""
+        if self.kill_switch is None:
+            return ""
+        state = self.kill_switch.evaluate(equity)
+        if not state.halted:
+            return ""
+        return f"kill switch active ({state.halt_reason}): {state.halt_detail}"
+
+    def risk_status(self) -> Optional[dict]:
+        """Kill-switch snapshot, or None when the kill switch is disabled."""
+        return self.kill_switch.status() if self.kill_switch else None
+
+    def flatten_all(self, *, trade_date: str, reason: str = "flatten") -> List[OrderResult]:
+        """Sell every open position at market.
+
+        Irreversible and unconditional — it ignores ratings, targets, and the
+        kill switch's halt state, because its whole purpose is to be usable
+        once the kill switch has tripped. Callers are responsible for deciding
+        that flattening is wanted; nothing here second-guesses that.
+        """
+        if not self.dry_run and not self.enabled:
+            raise ExecutionDisabled(
+                "execution_dry_run is off but execution_enabled is not set; "
+                "refusing to submit orders"
+            )
+
+        positions = self.broker.get_positions()
+        results: List[OrderResult] = []
+        for pos in positions:
+            if pos.qty <= 0:
+                continue
+            intent = OrderIntent(
+                symbol=pos.symbol,
+                side=SELL,
+                client_order_id=client_order_id(pos.symbol, trade_date, reason, SELL),
+                reason=f"{reason}: close {pos.qty:g} shares",
+                qty=pos.qty,
+                rating=reason,
+                trade_date=trade_date,
+                current_value=pos.market_value,
+                target_value=0.0,
+            )
+            if self.dry_run:
+                result = OrderResult(
+                    intent=intent,
+                    status=STATUS_DRY_RUN,
+                    detail="dry run: position would be closed",
+                )
+            else:
+                result = self.broker.submit(intent)
             self.journal.append(result.to_record())
             results.append(result)
         return results

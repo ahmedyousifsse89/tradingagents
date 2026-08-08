@@ -56,6 +56,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        broker: Optional[Any] = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -64,10 +65,15 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            broker: Optional execution broker. When given, live holdings and cash
+                are rendered into the Trader and Portfolio Manager prompts so the
+                agents rate a ticker knowing what is already on the book. Sizing
+                is unaffected — the reconciler owns that.
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.broker = broker
 
         # Update the interface's config
         set_config(self.config)
@@ -333,12 +339,29 @@ class TradingAgentsGraph:
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
 
+    def _portfolio_context(self, company_name: str) -> str:
+        """Render live broker holdings for the prompt, or "" when unavailable."""
+        if self.broker is None:
+            return ""
+        from tradingagents.execution.portfolio_context import fetch_portfolio_context
+
+        return fetch_portfolio_context(
+            self.broker,
+            company_name,
+            target_weights=self.config.get("execution_target_weights"),
+            max_position_weight=self.config.get("execution_max_position_weight"),
+        )
+
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, asset_type=asset_type, past_context=past_context
+            company_name,
+            trade_date,
+            asset_type=asset_type,
+            past_context=past_context,
+            portfolio_context=self._portfolio_context(company_name),
         )
         args = self.propagator.get_graph_args()
 

@@ -33,6 +33,41 @@ Breaking changes within the 0.x line are called out explicitly.
 - **`TRADINGAGENTS_*` overrides for the execution caps**: enabled/dry-run/live
   flags, journal path, max position weight, max gross exposure, minimum order
   notional, and maximum orders per day.
+- **Portfolio context in agent prompts.** With a broker attached
+  (`TradingAgentsGraph(broker=...)`), live holdings, cash, and exposure are
+  rendered into the Trader and Portfolio Manager prompts, so the agents know
+  whether a name is already held, already at its cap, or not held at all.
+  Advisory only — sizing stays with the reconciler. A broker outage degrades
+  the prompt to empty instead of failing the run.
+- **Drawdown kill switch (`tradingagents.execution.risk`).** Tracks an equity
+  high-water mark and halts every order — in dry-run mode too — when the
+  account falls past `risk_max_total_drawdown` (default 15% below the
+  high-water mark) or `risk_max_daily_drawdown` (default 5% below the UTC
+  day's open). A tripped switch never clears itself, on recovery or restart;
+  resuming is a human action that rebases the marks. State persists to JSON
+  and a corrupt state file reads as halted. Optional `risk_flatten_on_halt`
+  liquidates on trip, off by default.
+- **Unattended runner (`tradingagents.runner`).** Watchlist store, run history,
+  and an APScheduler cron loop. A pass checks the kill switch before spending
+  anything on LLM calls, analyses each ticker (one failure does not abort the
+  rest), then executes all ratings as a single batch so the gross-exposure cap
+  sees the whole book. One run at a time — a scheduled fire during a run is
+  dropped rather than queued.
+- **Control API (`tradingagents.server`).** FastAPI app for status, positions,
+  watchlist CRUD, run history with full decisions, the order journal, manual
+  run triggers, halt/resume, and a confirmation-gated flatten. Bearer-token
+  auth is mandatory: the API refuses to start without `TRADINGAGENTS_API_TOKEN`.
+- **Next.js dashboard (`web/`)** for Vercel, and `Dockerfile.server` +
+  `railway.json` for Railway. The dashboard reaches the bot only through
+  server-side proxy routes, so the API token never enters the browser bundle
+  and no CORS configuration is required.
+- **`server` install extra** (`pip install -e ".[server]"`) pulling in FastAPI,
+  uvicorn, and APScheduler.
+
+### Fixed
+
+- **Unanchored `lib/` and `build/` in `.gitignore`** matched at any depth,
+  which silently excluded `web/lib/` from commits. Anchored to the repo root.
 
 ## [0.2.5] — 2026-05-11
 
