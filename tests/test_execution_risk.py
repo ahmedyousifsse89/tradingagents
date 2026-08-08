@@ -255,3 +255,54 @@ def test_repeated_flattens_get_distinct_order_ids(tmp_path):
 
     assert first.intent.client_order_id != second.intent.client_order_id
     assert second.submitted is True
+
+
+def test_switch_tripping_mid_run_flattens_immediately(tmp_path):
+    """A drawdown that appears at execution time must not wait for the next pass."""
+    from tests.execution_fakes import position
+
+    config = engine_config(tmp_path, risk_max_total_drawdown=0.10, risk_flatten_on_halt=True)
+
+    rich = ExecutionEngine(config, broker=FakeBroker(equity=100_000.0))
+    rich.execute_ratings({"NVDA": "Buy"}, trade_date="2026-08-07")
+
+    broker = FakeBroker(equity=80_000.0, positions=[position("NVDA", 10, 100.0)])
+    poorer = ExecutionEngine(config, broker=broker)
+    (result,) = poorer.execute_ratings({"AMD": "Buy"}, trade_date="2026-08-08")
+
+    assert result.status == STATUS_REJECTED
+    assert "flattened 1 position(s): NVDA" in result.detail
+    assert [i.symbol for i in broker.submitted] == ["NVDA"]
+
+
+def test_flatten_on_trip_happens_once_not_per_blocked_order(tmp_path):
+    from tests.execution_fakes import position
+
+    config = engine_config(tmp_path, risk_max_total_drawdown=0.10, risk_flatten_on_halt=True)
+    ExecutionEngine(config, broker=FakeBroker(equity=100_000.0)).execute_ratings(
+        {"NVDA": "Buy"}, trade_date="2026-08-07"
+    )
+
+    broker = FakeBroker(equity=80_000.0, positions=[position("NVDA", 10, 100.0)])
+    poorer = ExecutionEngine(config, broker=broker)
+    poorer.execute_ratings({"AMD": "Buy"}, trade_date="2026-08-08")
+    # Already halted on the second pass, so no second liquidation.
+    poorer.execute_ratings({"TSLA": "Buy"}, trade_date="2026-08-08")
+
+    assert [i.symbol for i in broker.submitted] == ["NVDA"]
+
+
+def test_no_flatten_on_trip_when_the_option_is_off(tmp_path):
+    from tests.execution_fakes import position
+
+    config = engine_config(tmp_path, risk_max_total_drawdown=0.10)
+    ExecutionEngine(config, broker=FakeBroker(equity=100_000.0)).execute_ratings(
+        {"NVDA": "Buy"}, trade_date="2026-08-07"
+    )
+
+    broker = FakeBroker(equity=80_000.0, positions=[position("NVDA", 10, 100.0)])
+    (result,) = ExecutionEngine(config, broker=broker).execute_ratings(
+        {"AMD": "Buy"}, trade_date="2026-08-08"
+    )
+    assert "flattened" not in result.detail
+    assert broker.submitted == []

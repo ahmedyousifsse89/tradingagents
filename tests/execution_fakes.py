@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from tradingagents.execution.broker import (
     STATUS_SUBMITTED,
     AccountSnapshot,
+    FillInfo,
     OrderIntent,
     OrderResult,
     PositionSnapshot,
@@ -27,7 +28,12 @@ class FakeBroker:
         trading_blocked: bool = False,
         prices: Optional[Dict[str, float]] = None,
         fail_submit: bool = False,
+        fill_price: Optional[float] = None,
     ):
+        # When set, every submitted order reports a fill at this price, so
+        # tests can exercise the actual-fill path without a broker.
+        self.fill_price = fill_price
+        self._fills: Dict[str, FillInfo] = {}
         self._equity = equity
         self._positions = positions or []
         self._market_open = market_open
@@ -57,12 +63,23 @@ class FakeBroker:
     def get_price(self, symbol: str) -> Optional[float]:
         return self._prices.get(symbol)
 
+    def get_fill(self, client_order_id: str) -> Optional[FillInfo]:
+        return self._fills.get(client_order_id)
+
     def submit(self, intent: OrderIntent) -> OrderResult:
         if self.fail_submit:
             raise RuntimeError("broker unavailable")
         self.submitted.append(intent)
         order_id = f"order-{len(self.submitted)}"
         self._by_client_id[intent.client_order_id] = order_id
+        if self.fill_price:
+            self._fills[intent.client_order_id] = FillInfo(
+                symbol=intent.symbol,
+                price=self.fill_price,
+                qty=intent.qty or 1.0,
+                side=intent.side,
+                filled_at="2026-08-07T14:30:00+00:00",
+            )
         return OrderResult(
             intent=intent,
             status=STATUS_SUBMITTED,

@@ -21,6 +21,7 @@ from .broker import (
     STATUS_ERROR,
     STATUS_SUBMITTED,
     AccountSnapshot,
+    FillInfo,
     OrderIntent,
     OrderResult,
     PositionSnapshot,
@@ -142,6 +143,35 @@ class AlpacaBroker:
             logger.debug("client order id lookup failed for %s", client_order_id)
             return None
         return str(order.id) if order is not None else None
+
+    def get_fill(self, client_order_id: str) -> Optional[FillInfo]:
+        """Fill price and quantity for a placed order.
+
+        Returns None when the order is unknown, still open, or cancelled —
+        callers treat that as "no actual execution to measure against".
+        """
+        try:
+            order = self._trading.get_order_by_client_id(client_order_id)
+        except Exception:
+            logger.debug("fill lookup failed for %s", client_order_id)
+            return None
+        if order is None:
+            return None
+
+        price = getattr(order, "filled_avg_price", None)
+        qty = getattr(order, "filled_qty", None)
+        if not price or not qty or float(qty) <= 0:
+            return None
+
+        filled_at = getattr(order, "filled_at", None)
+        side = getattr(order, "side", None)
+        return FillInfo(
+            symbol=str(getattr(order, "symbol", "")),
+            price=float(price),
+            qty=float(qty),
+            side=str(getattr(side, "value", side) or ""),
+            filled_at=filled_at.isoformat() if hasattr(filled_at, "isoformat") else "",
+        )
 
     def get_price(self, symbol: str) -> Optional[float]:
         client = self._ensure_data_client()

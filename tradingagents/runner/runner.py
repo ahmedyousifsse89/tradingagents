@@ -173,14 +173,25 @@ class TradingRunner:
         return record
 
     def _run_body(self, record: RunRecord, tickers: Optional[Sequence[str]]) -> None:
-        selected = list(tickers) if tickers else self.watchlist.load()
+        explicit = bool(tickers)
+        selected = list(tickers) if explicit else self.watchlist.load()
         max_tickers = self.config.get("run_max_tickers", 10)
+
         if max_tickers and len(selected) > max_tickers:
-            record.note = (
-                f"watchlist has {len(selected)} tickers; truncated to the first "
-                f"{max_tickers} by run_max_tickers"
-            )
-            selected = selected[:max_tickers]
+            if explicit:
+                # The caller named these, so honour their order and just cap.
+                record.note = (
+                    f"{len(selected)} tickers requested; capped at {max_tickers} "
+                    f"by run_max_tickers"
+                )
+                selected = selected[:max_tickers]
+            else:
+                selected = self._rotate(selected, max_tickers)
+                record.note = (
+                    f"watchlist has {len(self.watchlist.load())} tickers; this pass "
+                    f"covers the {max_tickers} least recently analysed: "
+                    f"{', '.join(selected)}"
+                )
         record.tickers = selected
 
         if not selected:
@@ -219,6 +230,29 @@ class TradingRunner:
             record.orders = [r.to_record() for r in results]
 
         record.status = STATUS_COMPLETED
+
+    def _rotate(self, tickers: Sequence[str], limit: int) -> List[str]:
+        """Pick the ``limit`` least recently analysed tickers.
+
+        Taking the first N every pass means a watchlist longer than the cap has
+        a permanent tail that is never looked at. Ordering by when each ticker
+        was last analysed turns the cap into a rotation, so every name gets
+        covered eventually. Ties and never-analysed tickers keep watchlist
+        order, which makes a fresh watchlist behave exactly like the old
+        first-N slice on its first pass.
+        """
+        last_seen: Dict[str, str] = {}
+        for record in self.history.all():
+            started = record.get("started_at", "")
+            for ticker in record.get("tickers", []):
+                key = str(ticker).upper()
+                if started > last_seen.get(key, ""):
+                    last_seen[key] = started
+
+        order = {ticker: index for index, ticker in enumerate(tickers)}
+        return sorted(
+            tickers, key=lambda t: (last_seen.get(t.upper(), ""), order[t])
+        )[:limit]
 
     def _check_halt(self) -> Optional[str]:
         """Return the halt message when trading is blocked, else None."""

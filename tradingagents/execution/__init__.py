@@ -17,11 +17,13 @@ from .broker import (
     AccountSnapshot,
     Broker,
     ExecutionPlan,
+    FillInfo,
     OrderIntent,
     OrderResult,
     PositionSnapshot,
 )
 from .engine import ExecutionDisabled, ExecutionEngine, describe_results
+from .fills import EntryFillLookup, entry_fill_lookup
 from .guard import OrderGuard
 from .journal import ExecutionJournal, default_journal_path
 from .portfolio_context import fetch_portfolio_context, render_portfolio_context
@@ -54,7 +56,9 @@ __all__ = [
     "ExecutionDisabled",
     "ExecutionEngine",
     "ExecutionJournal",
+    "EntryFillLookup",
     "ExecutionPlan",
+    "FillInfo",
     "KillSwitch",
     "OrderGuard",
     "OrderIntent",
@@ -66,6 +70,7 @@ __all__ = [
     "default_journal_path",
     "default_risk_state_path",
     "describe_results",
+    "entry_fill_lookup",
     "fetch_portfolio_context",
     "kill_switch_from_config",
     "plan_orders",

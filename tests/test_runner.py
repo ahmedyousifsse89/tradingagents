@@ -162,11 +162,49 @@ def test_empty_watchlist_completes_without_analysis(tmp_path):
     assert "empty" in record.note
 
 
-def test_ticker_cap_truncates_and_says_so(tmp_path):
+def test_explicit_tickers_are_capped_in_the_order_given(tmp_path):
     runner = make_runner(tmp_path, graph=FakeGraph(), run_max_tickers=2)
     record = runner.run_once(["AAA", "BBB", "CCC"], trade_date=TRADE_DATE)
     assert record.tickers == ["AAA", "BBB"]
-    assert "truncated" in record.note
+    assert "capped at 2" in record.note
+
+
+def test_first_watchlist_pass_takes_the_leading_tickers(tmp_path):
+    runner = make_runner(tmp_path, graph=FakeGraph(), run_max_tickers=2)
+    runner.watchlist.save(["AAA", "BBB", "CCC"])
+    record = runner.run_once(trade_date=TRADE_DATE)
+    assert record.tickers == ["AAA", "BBB"]
+
+
+def test_oversized_watchlist_rotates_across_passes(tmp_path):
+    """The tail of a long watchlist must not be permanently starved."""
+    runner = make_runner(tmp_path, graph=FakeGraph(), run_max_tickers=2)
+    runner.watchlist.save(["AAA", "BBB", "CCC", "DDD"])
+
+    first = runner.run_once(trade_date=TRADE_DATE).tickers
+    second = runner.run_once(trade_date=TRADE_DATE).tickers
+    third = runner.run_once(trade_date=TRADE_DATE).tickers
+
+    assert first == ["AAA", "BBB"]
+    assert second == ["CCC", "DDD"], "never-analysed tickers come first"
+    assert third == ["AAA", "BBB"], "rotation wraps to the oldest again"
+    assert sorted(first + second) == ["AAA", "BBB", "CCC", "DDD"]
+
+
+def test_rotation_note_names_the_selected_tickers(tmp_path):
+    runner = make_runner(tmp_path, graph=FakeGraph(), run_max_tickers=1)
+    runner.watchlist.save(["AAA", "BBB"])
+    record = runner.run_once(trade_date=TRADE_DATE)
+    assert "least recently analysed: AAA" in record.note
+
+
+def test_rotation_ignores_tickers_no_longer_on_the_watchlist(tmp_path):
+    runner = make_runner(tmp_path, graph=FakeGraph(), run_max_tickers=2)
+    runner.watchlist.save(["AAA", "BBB"])
+    runner.run_once(trade_date=TRADE_DATE)
+
+    runner.watchlist.save(["AAA", "BBB", "CCC"])
+    assert runner.run_once(trade_date=TRADE_DATE).tickers == ["CCC", "AAA"]
 
 
 def test_one_failing_ticker_does_not_abort_the_pass(tmp_path):

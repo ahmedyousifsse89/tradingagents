@@ -1,6 +1,6 @@
 # TradingAgents/graph/reflection.py
 
-from typing import Any
+from typing import Any, Optional
 
 
 class Reflector:
@@ -34,6 +34,7 @@ class Reflector:
         raw_return: float,
         alpha_return: float,
         benchmark_name: str = "SPY",
+        entry_price: Optional[float] = None,
     ) -> str:
         """Single reflection call on the final trade decision with outcome context.
 
@@ -42,14 +43,33 @@ class Reflector:
         ``benchmark_name`` is the label used for the alpha line (e.g. ``"SPY"``
         for US tickers, ``"^N225"`` for ``.T`` listings); defaults to SPY for
         callers that haven't been updated to thread the benchmark through.
+
+        ``entry_price`` is the price the account actually filled at, when the
+        decision resulted in a real order. The prompt says which basis it is
+        so the reflection does not draw execution lessons from a trade that
+        never happened.
         """
+        if entry_price:
+            basis = (
+                f"Measured from the actual fill at ${entry_price:,.2f}, so this "
+                f"return includes real execution slippage."
+            )
+        else:
+            basis = (
+                "No order was executed for this decision (Hold, or the order was "
+                "not placed), so this return is hypothetical — measured from the "
+                "closing price on the analysis date. Judge the directional call, "
+                "not the execution."
+            )
+
         messages = [
             ("system", self.log_reflection_prompt),
             (
                 "human",
                 (
                     f"Raw return: {raw_return:+.1%}\n"
-                    f"Alpha vs {benchmark_name}: {alpha_return:+.1%}\n\n"
+                    f"Alpha vs {benchmark_name}: {alpha_return:+.1%}\n"
+                    f"{basis}\n\n"
                     f"Final Decision:\n{final_decision}"
                 ),
             ),

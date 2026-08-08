@@ -42,6 +42,23 @@ class PositionSnapshot:
 
 
 @dataclass(frozen=True)
+class FillInfo:
+    """What an order actually executed at, as reported by the broker.
+
+    This is the number the reflection layer needs: a decision's outcome should
+    be measured from the price the account really paid — after slippage, and
+    after the order filled at the next session's open rather than at the close
+    the analysis was run against.
+    """
+
+    symbol: str
+    price: float
+    qty: float
+    side: str
+    filled_at: str = ""
+
+
+@dataclass(frozen=True)
 class OrderIntent:
     """A decided-upon order, before any broker call.
 
@@ -133,6 +150,10 @@ class Broker(Protocol):
 
     def get_price(self, symbol: str) -> Optional[float]:
         """Latest trade price, or None when unavailable."""
+        ...
+
+    def get_fill(self, client_order_id: str) -> Optional[FillInfo]:
+        """Fill details for a placed order, or None when unknown or unfilled."""
         ...
 
 

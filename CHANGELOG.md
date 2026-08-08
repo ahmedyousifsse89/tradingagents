@@ -64,8 +64,37 @@ Breaking changes within the 0.x line are called out explicitly.
 - **`server` install extra** (`pip install -e ".[server]"`) pulling in FastAPI,
   uvicorn, and APScheduler.
 
+- **Reflection grades decisions against real fills.** When a broker is
+  attached, the realised return in the decision log is measured from the price
+  the account actually filled at instead of the closing price on the analysis
+  date, so slippage and the analysis-to-execution gap are part of what the
+  agents learn. Decisions that never traded are labelled hypothetical in the
+  reflection prompt rather than being presented as executed trades.
+  (`tradingagents.execution.fills`, `Broker.get_fill`)
+- **Watchlist rotation.** A watchlist longer than `run_max_tickers` used to
+  have a permanently starved tail, because each pass took the first N. Passes
+  now take the least recently analysed tickers, so the cap rotates coverage.
+  Explicitly requested ticker lists keep their given order.
+- **Mid-run liquidation.** `risk_flatten_on_halt` fired only at run start, so
+  a switch tripping during execution left positions open until the next
+  scheduled pass. It now flattens on the transition, wherever the trip occurs,
+  and exactly once rather than per blocked order.
+
 ### Fixed
 
+- **Per-order and daily order caps blocked exits.** Both applied to sells, so a
+  position that drifted above the per-position cap could not be closed — the
+  exit order was exactly the size that tripped the cap. The caps bound risk
+  taken on and now apply to buys only; blocked accounts, closed markets, and
+  the dust minimum still apply to both sides.
+- **Flatten deduplicated against itself.** Flatten built its `client_order_id`
+  from ticker+date+reason, so a second flatten on the same day — after buying
+  back in, or retried after a partial failure — was rejected by the broker as
+  a duplicate. Flatten ids are now unique per invocation.
+- **Run-history write failures killed the caller.** An exception from the final
+  `history.save` in `run_once`'s `finally` block propagated out, which for a
+  scheduled fire would kill the APScheduler job and silently stop all future
+  runs.
 - **Unanchored `lib/` and `build/` in `.gitignore`** matched at any depth,
   which silently excluded `web/lib/` from commits. Anchored to the repo root.
 

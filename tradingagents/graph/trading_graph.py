@@ -57,6 +57,7 @@ class TradingAgentsGraph:
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
         broker: Optional[Any] = None,
+        fill_lookup: Optional[Any] = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -69,11 +70,22 @@ class TradingAgentsGraph:
                 are rendered into the Trader and Portfolio Manager prompts so the
                 agents rate a ticker knowing what is already on the book. Sizing
                 is unaffected — the reconciler owns that.
+            fill_lookup: Optional ``(ticker, trade_date) -> FillInfo | None``.
+                When given, the reflection layer grades past decisions against
+                the price the account actually filled at instead of the closing
+                price on the analysis date. Defaults to one built from the
+                execution journal whenever ``broker`` is supplied.
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
         self.broker = broker
+
+        if fill_lookup is None and broker is not None:
+            from tradingagents.execution.fills import entry_fill_lookup
+
+            fill_lookup = entry_fill_lookup(self.config, broker)
+        self._fill_lookup = fill_lookup
 
         # Update the interface's config
         set_config(self.config)
@@ -220,14 +232,21 @@ class TradingAgentsGraph:
 
     def _fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5,
-        benchmark: str = "SPY",
+        benchmark: str = "SPY", entry_price: Optional[float] = None,
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
         ``benchmark`` is the index used as the alpha baseline (resolved by the
-        caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
-        actual_holding_days)`` or ``(None, None, None)`` if price data is
-        unavailable (too recent, delisted, or network error).
+        caller via ``_resolve_benchmark``). ``entry_price``, when given, is the
+        price the account actually filled at; the raw return is measured from
+        it instead of the closing price on ``trade_date``, so slippage and the
+        gap between analysis and execution are reflected in what the agents
+        learn. The benchmark leg always uses closes — there is no fill to
+        compare it against.
+
+        Returns ``(raw_return, alpha_return, actual_holding_days)`` or
+        ``(None, None, None)`` if price data is unavailable (too recent,
+        delisted, or network error).
         """
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
@@ -241,10 +260,12 @@ class TradingAgentsGraph:
                 return None, None, None
 
             actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
-            raw = float(
-                (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
-                / stock["Close"].iloc[0]
+            basis = (
+                float(entry_price)
+                if entry_price and entry_price > 0
+                else float(stock["Close"].iloc[0])
             )
+            raw = float((stock["Close"].iloc[actual_days] - basis) / basis)
             bench_ret = float(
                 (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
                 / bench["Close"].iloc[0]
@@ -275,8 +296,12 @@ class TradingAgentsGraph:
         benchmark = self._resolve_benchmark(ticker)
         updates = []
         for entry in pending:
+            fill = self._entry_fill(ticker, entry["date"])
             raw, alpha, days = self._fetch_returns(
-                ticker, entry["date"], benchmark=benchmark,
+                ticker,
+                entry["date"],
+                benchmark=benchmark,
+                entry_price=fill.price if fill else None,
             )
             if raw is None:
                 continue  # price not available yet — try again next run
@@ -285,6 +310,7 @@ class TradingAgentsGraph:
                 raw_return=raw,
                 alpha_return=alpha,
                 benchmark_name=benchmark,
+                entry_price=fill.price if fill else None,
             )
             updates.append({
                 "ticker": ticker,
@@ -338,6 +364,21 @@ class TradingAgentsGraph:
                 self._checkpointer_ctx.__exit__(None, None, None)
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
+
+    def _entry_fill(self, ticker: str, trade_date: str):
+        """Actual entry fill for a past decision, or None when it never traded.
+
+        None is the common case and an honest one: Hold ratings place no order,
+        and guards reject some that are placed. The caller then measures the
+        outcome from market prices and labels it as hypothetical.
+        """
+        if self._fill_lookup is None:
+            return None
+        try:
+            return self._fill_lookup(ticker, trade_date)
+        except Exception:
+            logger.debug("entry fill lookup failed for %s on %s", ticker, trade_date)
+            return None
 
     def _portfolio_context(self, company_name: str) -> str:
         """Render live broker holdings for the prompt, or "" when unavailable."""

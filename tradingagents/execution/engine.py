@@ -17,7 +17,7 @@ evidence about the orders that would actually have gone out.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Sequence
 
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -132,7 +132,9 @@ class ExecutionEngine:
         for note in execution_plan.skipped:
             logger.info("execution plan skipped: %s", note)
 
-        halt_detail = self._halt_detail(execution_plan.account.equity)
+        halt_detail = self._halt_detail(
+            execution_plan.account.equity, trade_date=trade_date
+        )
         market_open = self.broker.is_market_open()
 
         results: List[OrderResult] = []
@@ -149,14 +151,40 @@ class ExecutionEngine:
             results.append(result)
         return results
 
-    def _halt_detail(self, equity: float) -> str:
-        """Update the kill switch with current equity; return why it blocks, if it does."""
+    def _halt_detail(self, equity: float, *, trade_date: str = "") -> str:
+        """Update the kill switch with current equity; return why it blocks, if it does.
+
+        A switch that trips *here* rather than at run start means equity fell
+        during the run itself — precisely the case where waiting for the next
+        scheduled pass to liquidate is too slow. So the flatten happens now,
+        on the transition, not once per subsequent blocked order.
+        """
         if self.kill_switch is None:
             return ""
+
+        was_halted = self.kill_switch.load().halted
         state = self.kill_switch.evaluate(equity)
         if not state.halted:
             return ""
-        return f"kill switch active ({state.halt_reason}): {state.halt_detail}"
+
+        detail = f"kill switch active ({state.halt_reason}): {state.halt_detail}"
+        if not was_halted and self.config.get("risk_flatten_on_halt", False):
+            detail += "; " + self._flatten_on_trip(trade_date)
+        return detail
+
+    def _flatten_on_trip(self, trade_date: str) -> str:
+        try:
+            results = self.flatten_all(
+                trade_date=trade_date or date.today().isoformat(),
+                reason="kill-switch-flatten",
+            )
+        except Exception as exc:
+            logger.exception("flatten-on-halt failed")
+            return f"flatten failed ({type(exc).__name__}: {exc})"
+        closed = [r.intent.symbol for r in results if r.submitted or self.dry_run]
+        if not closed:
+            return "flatten produced no orders"
+        return f"flattened {len(closed)} position(s): {', '.join(closed)}"
 
     def risk_status(self) -> Optional[dict]:
         """Kill-switch snapshot, or None when the kill switch is disabled."""

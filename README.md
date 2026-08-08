@@ -233,6 +233,13 @@ TradingAgents persists two kinds of state across runs.
 
 The decision log is always on. Each completed run appends its decision to `~/.tradingagents/memory/trading_memory.md`. On the next run for the same ticker, TradingAgents fetches the realised return (raw and alpha vs SPY), generates a one-paragraph reflection, and injects the most recent same-ticker decisions plus recent cross-ticker lessons into the Portfolio Manager prompt, so each analysis carries forward what worked and what didn't.
 
+When a broker is attached, the realised return is measured from the price the
+account **actually filled at**, not from the closing price on the analysis
+date — so slippage and the gap between analysis and execution are part of what
+the agents learn from. Decisions that never traded (a Hold, or an order a guard
+rejected) are still graded, but the reflection prompt says the outcome is
+hypothetical so no execution lessons are drawn from a trade nobody made.
+
 Override the path with `TRADINGAGENTS_MEMORY_LOG_PATH`.
 
 ### Checkpoint resume
@@ -352,6 +359,10 @@ dry-run mode too.
 | `risk_max_daily_drawdown` | `0.05` | Halt at 5% below the current UTC day's open |
 | `risk_flatten_on_halt` | `False` | Whether a halt also liquidates every position |
 
+With `risk_flatten_on_halt` on, liquidation happens on the transition — at run
+start if the switch was already tripped, or the moment it trips mid-run, so an
+intraday collapse does not wait for the next scheduled pass.
+
 A tripped switch **never clears itself** — not on recovery, not on restart.
 Resuming is a human action (dashboard button or `KillSwitch.resume()`), and it
 rebases the high-water mark to current equity so the switch does not
@@ -380,7 +391,9 @@ One pass does three things in order:
    costs nothing in LLM spend.
 2. **Analyse every ticker.** A ticker that raises is recorded in the run's
    `errors` and the pass continues — the other tickers have already been paid
-   for.
+   for. When the watchlist is longer than `run_max_tickers`, each pass takes
+   the least recently analysed names, so the cap rotates coverage instead of
+   permanently starving the tail.
 3. **Execute once, as a batch.** All ratings go to the engine in a single call
    so the gross-exposure cap sees the whole book instead of approving each name
    in ignorance of the others.
