@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from .broker import AccountSnapshot, OrderIntent
+from .broker import SELL, AccountSnapshot, OrderIntent
 from .journal import ExecutionJournal
 
 
@@ -65,6 +65,17 @@ class OrderGuard:
                 f"order notional {notional:.2f} below minimum "
                 f"{self.min_order_notional:.2f}"
             )
+
+        # The remaining limits bound risk *taken on*, so they apply to buys
+        # only. Blocking an exit because it is large inverts the purpose of a
+        # size cap: a position that drifted above the cap is exactly the one
+        # whose exit order trips it, which would trap you in the position the
+        # cap exists to prevent. The daily count is likewise a buy limit — a
+        # runaway sell loop is self-limiting, since each fill shrinks the
+        # position and you cannot sell what you do not hold, while a runaway
+        # buy loop keeps spending until the cash runs out.
+        if intent.side == SELL:
+            return None
 
         cap = self.max_position_weight * account.equity
         if notional is not None and notional > cap:

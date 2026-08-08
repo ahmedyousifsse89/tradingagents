@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { checkRateLimit, clientKey, resetRateLimit } from "@/lib/rate-limit";
 import { SESSION_COOKIE, createSession, passwordMatches } from "@/lib/session";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
+  const key = clientKey(request);
+  const retryAfter = checkRateLimit(key);
+  if (retryAfter > 0) {
+    return NextResponse.json(
+      { detail: `too many attempts, try again in ${retryAfter}s` },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
+
   let password = "";
   try {
     ({ password } = await request.json());
@@ -24,6 +34,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "incorrect password" }, { status: 401 });
   }
 
+  resetRateLimit(key);
   const session = createSession();
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, session.value, {

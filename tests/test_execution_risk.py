@@ -236,3 +236,22 @@ def test_flatten_all_respects_dry_run(tmp_path):
     (result,) = engine.flatten_all(trade_date="2026-08-07")
     assert result.submitted is False
     assert broker.submitted == []
+
+
+def test_repeated_flattens_get_distinct_order_ids(tmp_path):
+    """A second flatten on the same day must not look like a duplicate.
+
+    Flatten ids used to be derived from ticker+date+reason, so buying back in
+    and flattening again — or retrying after a partial failure — produced the
+    same client_order_id and was silently rejected by the broker.
+    """
+    from tests.execution_fakes import position
+
+    broker = FakeBroker(positions=[position("NVDA", 10, 100.0)])
+    engine = ExecutionEngine(engine_config(tmp_path), broker=broker)
+
+    (first,) = engine.flatten_all(trade_date="2026-08-07")
+    (second,) = engine.flatten_all(trade_date="2026-08-07")
+
+    assert first.intent.client_order_id != second.intent.client_order_id
+    assert second.submitted is True

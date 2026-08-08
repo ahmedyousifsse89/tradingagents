@@ -17,6 +17,7 @@ evidence about the orders that would actually have gone out.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence
 
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -176,6 +177,11 @@ class ExecutionEngine:
             )
 
         positions = self.broker.get_positions()
+        # Flatten ids are unique per invocation, not per ticker+date like a
+        # rating-driven order. Deduplicating them would mean a second flatten
+        # on the same day — after buying back in, or a retry after a partial
+        # failure — is silently rejected by the broker as a duplicate.
+        stamp = datetime.now(timezone.utc).strftime("%H%M%S%f")
         results: List[OrderResult] = []
         for pos in positions:
             if pos.qty <= 0:
@@ -183,7 +189,9 @@ class ExecutionEngine:
             intent = OrderIntent(
                 symbol=pos.symbol,
                 side=SELL,
-                client_order_id=client_order_id(pos.symbol, trade_date, reason, SELL),
+                client_order_id=client_order_id(
+                    pos.symbol, trade_date, f"{reason}-{stamp}", SELL
+                ),
                 reason=f"{reason}: close {pos.qty:g} shares",
                 qty=pos.qty,
                 rating=reason,

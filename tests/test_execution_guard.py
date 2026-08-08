@@ -82,13 +82,46 @@ def test_order_above_per_order_cap_is_rejected(guard):
     assert "exceeds per-order cap" in reason
 
 
-def test_quantity_order_is_sized_from_its_value_delta(guard):
-    # Sells carry qty, not notional; the guard falls back to the value delta
-    # so an oversized exit is still caught.
-    reason = guard.reject_reason(
-        sell_intent(current_value=90_000.0), ACCOUNT, True, now=NOW
+def test_oversized_exit_is_allowed(guard):
+    # A position that drifted above the per-position cap is exactly the one
+    # whose exit trips a size cap. Blocking it would trap the account in the
+    # position the cap exists to prevent.
+    assert (
+        guard.reject_reason(sell_intent(current_value=90_000.0), ACCOUNT, True, now=NOW)
+        is None
     )
-    assert "exceeds per-order cap" in reason
+
+
+def test_daily_order_cap_does_not_block_exits(tmp_path):
+    journal = ExecutionJournal(tmp_path / "journal.jsonl")
+    guard = OrderGuard(journal, max_orders_per_day=1)
+    journal.append(
+        {
+            "client_order_id": "ta-0",
+            "submitted": True,
+            "logged_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+    assert guard.reject_reason(buy_intent(), ACCOUNT, True, now=NOW) is not None
+    assert guard.reject_reason(sell_intent(), ACCOUNT, True, now=NOW) is None
+
+
+def test_exits_are_still_blocked_by_a_blocked_account(guard):
+    blocked = AccountSnapshot(
+        equity=100_000.0, cash=0.0, buying_power=0.0, trading_blocked=True
+    )
+    assert guard.reject_reason(sell_intent(), blocked, True, now=NOW) is not None
+
+
+def test_exits_are_still_blocked_when_the_market_is_closed(guard):
+    assert guard.reject_reason(sell_intent(), ACCOUNT, False, now=NOW) is not None
+
+
+def test_dust_sized_exits_are_still_skipped(guard):
+    reason = guard.reject_reason(
+        sell_intent(current_value=5.0), ACCOUNT, True, now=NOW
+    )
+    assert "below minimum" in reason
 
 
 def test_daily_order_cap_is_enforced(tmp_path):
