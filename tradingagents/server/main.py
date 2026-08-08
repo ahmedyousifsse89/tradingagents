@@ -50,6 +50,15 @@ def build():
     else:
         logger.info("scheduler disabled (set TRADINGAGENTS_SCHEDULE_ENABLED=true)")
 
+    # Log the operating mode on boot: on a hosted deploy these lines are the
+    # fastest way to confirm which provider and which money gates a container
+    # actually came up with.
+    logger.info(
+        "llm_provider=%s deep=%s quick=%s",
+        config.get("llm_provider"),
+        config.get("deep_think_llm"),
+        config.get("quick_think_llm"),
+    )
     logger.info(
         "execution_enabled=%s execution_dry_run=%s alpaca_live=%s",
         config.get("execution_enabled"),
