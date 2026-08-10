@@ -39,6 +39,13 @@ def create_portfolio_manager(llm):
             else ""
         )
 
+        portfolio_context = state.get("portfolio_context", "")
+        portfolio_block = (
+            f"\n**Current Portfolio (live broker state):**\n{portfolio_context}\n"
+            if portfolio_context
+            else ""
+        )
+
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 {instrument_context}
@@ -55,7 +62,7 @@ def create_portfolio_manager(llm):
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
-{lessons_line}
+{lessons_line}{portfolio_block}
 **Risk Analysts Debate History:**
 {history}
 

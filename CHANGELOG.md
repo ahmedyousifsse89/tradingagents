@@ -6,6 +6,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Broker execution layer (`tradingagents.execution`)** with an Alpaca
+  adapter, so a 5-tier rating can be turned into real orders. Ratings map to
+  target weights of account equity (Buy 8% / Overweight 4% / Hold unchanged /
+  Underweight 2% / Sell 0% by default); a reconciler orders only the
+  difference between target and the position Alpaca reports, which makes
+  re-runs idempotent rather than position-doubling. Order sizing is
+  arithmetic — the Trader agent's free-text `position_sizing` is never parsed
+  into share counts.
+- **Order guards and journal.** Blocked accounts, closed markets, sub-minimum
+  and oversized orders, a daily order cap, and duplicate `client_order_id`s
+  are rejected before submission, identically in dry-run and live mode. Every
+  intent is appended to `~/.tradingagents/cache/execution/journal.jsonl`.
+- **Four independent switches before real money moves**: `execution_enabled`
+  (default off), `execution_dry_run` (default on), `alpaca_live` (default
+  off), and the `TRADINGAGENTS_ALPACA_ALLOW_LIVE` environment opt-in checked
+  inside the broker. Alpaca credentials read from `ALPACA_API_KEY_ID` /
+  `ALPACA_API_SECRET_KEY`.
+- **`execution` install extra** (`pip install -e ".[execution]"`) for
+  `alpaca-py`, kept optional so the research framework installs without a
+  trading SDK.
+- **`TRADINGAGENTS_*` overrides for the execution caps**: enabled/dry-run/live
+  flags, journal path, max position weight, max gross exposure, minimum order
+  notional, and maximum orders per day.
+- **Portfolio context in agent prompts.** With a broker attached
+  (`TradingAgentsGraph(broker=...)`), live holdings, cash, and exposure are
+  rendered into the Trader and Portfolio Manager prompts, so the agents know
+  whether a name is already held, already at its cap, or not held at all.
+  Advisory only — sizing stays with the reconciler. A broker outage degrades
+  the prompt to empty instead of failing the run.
+- **Drawdown kill switch (`tradingagents.execution.risk`).** Tracks an equity
+  high-water mark and halts every order — in dry-run mode too — when the
+  account falls past `risk_max_total_drawdown` (default 15% below the
+  high-water mark) or `risk_max_daily_drawdown` (default 5% below the UTC
+  day's open). A tripped switch never clears itself, on recovery or restart;
+  resuming is a human action that rebases the marks. State persists to JSON
+  and a corrupt state file reads as halted. Optional `risk_flatten_on_halt`
+  liquidates on trip, off by default.
+- **Unattended runner (`tradingagents.runner`).** Watchlist store, run history,
+  and an APScheduler cron loop. A pass checks the kill switch before spending
+  anything on LLM calls, analyses each ticker (one failure does not abort the
+  rest), then executes all ratings as a single batch so the gross-exposure cap
+  sees the whole book. One run at a time — a scheduled fire during a run is
+  dropped rather than queued.
+- **Control API (`tradingagents.server`).** FastAPI app for status, positions,
+  watchlist CRUD, run history with full decisions, the order journal, manual
+  run triggers, halt/resume, and a confirmation-gated flatten. Bearer-token
+  auth is mandatory: the API refuses to start without `TRADINGAGENTS_API_TOKEN`.
+- **Next.js dashboard (`web/`)** for Vercel, and a container image +
+  `railway.json` for Railway. The dashboard reaches the bot only through
+  server-side proxy routes, so the API token never enters the browser bundle
+  and no CORS configuration is required.
+- **`server` install extra** (`pip install -e ".[server]"`) pulling in FastAPI,
+  uvicorn, and APScheduler.
+
+- **Reflection grades decisions against real fills.** When a broker is
+  attached, the realised return in the decision log is measured from the price
+  the account actually filled at instead of the closing price on the analysis
+  date, so slippage and the analysis-to-execution gap are part of what the
+  agents learn. Decisions that never traded are labelled hypothetical in the
+  reflection prompt rather than being presented as executed trades.
+  (`tradingagents.execution.fills`, `Broker.get_fill`)
+- **Watchlist rotation.** A watchlist longer than `run_max_tickers` used to
+  have a permanently starved tail, because each pass took the first N. Passes
+  now take the least recently analysed tickers, so the cap rotates coverage.
+  Explicitly requested ticker lists keep their given order.
+- **Mid-run liquidation.** `risk_flatten_on_halt` fired only at run start, so
+  a switch tripping during execution left positions open until the next
+  scheduled pass. It now flattens on the transition, wherever the trip occurs,
+  and exactly once rather than per blocked order.
+
+### Fixed
+
+- **Per-order and daily order caps blocked exits.** Both applied to sells, so a
+  position that drifted above the per-position cap could not be closed — the
+  exit order was exactly the size that tripped the cap. The caps bound risk
+  taken on and now apply to buys only; blocked accounts, closed markets, and
+  the dust minimum still apply to both sides.
+- **Flatten deduplicated against itself.** Flatten built its `client_order_id`
+  from ticker+date+reason, so a second flatten on the same day — after buying
+  back in, or retried after a partial failure — was rejected by the broker as
+  a duplicate. Flatten ids are now unique per invocation.
+- **Run-history write failures killed the caller.** An exception from the final
+  `history.save` in `run_once`'s `finally` block propagated out, which for a
+  scheduled fire would kill the APScheduler job and silently stop all future
+  runs.
+- **Hosted deploys started the interactive CLI.** The root `Dockerfile`'s
+  entrypoint was `tradingagents`, so a platform that auto-detects the
+  Dockerfile — rather than reading `railway.json`'s `Dockerfile.server` path —
+  came up printing the welcome banner and dying on the first prompt with a
+  bare `Aborted.`, which looks like a crash and is not one. There is now one
+  image whose default command is the control API, with the CLI reachable by
+  overriding the command. `tradingagents analyze` also detects a missing TTY
+  and says what to run instead.
+- **Unanchored `lib/` and `build/` in `.gitignore`** matched at any depth,
+  which silently excluded `web/lib/` from commits. Anchored to the repo root.
+
 ## [0.2.5] — 2026-05-11
 
 ### Added

@@ -17,6 +17,29 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
+    # Broker execution. Only scalars are exposed here; the per-rating target
+    # weight table is a dict and is set in code or in a config override.
+    "TRADINGAGENTS_EXECUTION_ENABLED":    "execution_enabled",
+    "TRADINGAGENTS_EXECUTION_DRY_RUN":    "execution_dry_run",
+    "TRADINGAGENTS_ALPACA_LIVE":          "alpaca_live",
+    "TRADINGAGENTS_EXECUTION_JOURNAL":    "execution_journal_path",
+    "TRADINGAGENTS_MAX_POSITION_WEIGHT":  "execution_max_position_weight",
+    "TRADINGAGENTS_MAX_GROSS_EXPOSURE":   "execution_max_gross_exposure",
+    "TRADINGAGENTS_MIN_ORDER_NOTIONAL":   "execution_min_order_notional",
+    "TRADINGAGENTS_MAX_ORDERS_PER_DAY":   "execution_max_orders_per_day",
+    # Kill switch
+    "TRADINGAGENTS_KILL_SWITCH_ENABLED":  "risk_kill_switch_enabled",
+    "TRADINGAGENTS_MAX_TOTAL_DRAWDOWN":   "risk_max_total_drawdown",
+    "TRADINGAGENTS_MAX_DAILY_DRAWDOWN":   "risk_max_daily_drawdown",
+    "TRADINGAGENTS_FLATTEN_ON_HALT":      "risk_flatten_on_halt",
+    "TRADINGAGENTS_RISK_STATE_PATH":      "risk_state_path",
+    # Scheduled runner
+    "TRADINGAGENTS_SCHEDULE_ENABLED":     "schedule_enabled",
+    "TRADINGAGENTS_SCHEDULE_CRON":        "schedule_cron",
+    "TRADINGAGENTS_SCHEDULE_TIMEZONE":    "schedule_timezone",
+    "TRADINGAGENTS_WATCHLIST_PATH":       "watchlist_path",
+    "TRADINGAGENTS_RUN_HISTORY_PATH":     "run_history_path",
+    "TRADINGAGENTS_RUN_MAX_TICKERS":      "run_max_tickers",
 }
 
 
@@ -109,6 +132,55 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # so the reflection label keeps reading "Alpha vs SPY" for US tickers
     # while non-US tickers get their regional index automatically.
     "benchmark_ticker": None,
+    # Broker execution (tradingagents.execution).
+    # Money can only move when execution_enabled is True AND execution_dry_run
+    # is False. Reaching a real-money account additionally needs alpaca_live
+    # True and TRADINGAGENTS_ALPACA_ALLOW_LIVE set in the environment; any one
+    # of those four left at its default keeps orders off the live endpoint.
+    "execution_enabled": False,
+    "execution_dry_run": True,
+    "alpaca_live": False,
+    # None puts the journal under data_cache_dir/execution/journal.jsonl.
+    "execution_journal_path": None,
+    # Target fraction of account equity per 5-tier rating. None means "leave
+    # the position alone" — a Hold does not resize anything.
+    "execution_target_weights": {
+        "Buy": 0.08,
+        "Overweight": 0.04,
+        "Hold": None,
+        "Underweight": 0.02,
+        "Sell": 0.0,
+    },
+    "execution_max_position_weight": 0.10,   # per-name cap, fraction of equity
+    "execution_max_gross_exposure": 0.80,    # total invested cap, fraction of equity
+    "execution_min_order_notional": 10.0,    # skip dust rebalances
+    "execution_max_orders_per_day": 20,      # bounds damage from a runaway loop
+    # Alpaca supports fractional shares, so buys are placed as notional
+    # orders. Set False for whole-share-only accounts or instruments.
+    "execution_fractional_shares": True,
+    # Market-hours check. Leave False: notional and fractional orders are
+    # rejected outside regular trading hours anyway.
+    "execution_allow_when_market_closed": False,
+    # Kill switch. Drawdown is measured against the all-time equity high-water
+    # mark (total) and against the equity at the start of the UTC day (daily).
+    # A tripped switch blocks every order and is only cleared by a human.
+    "risk_kill_switch_enabled": True,
+    "risk_max_total_drawdown": 0.15,   # halt at 15% below the high-water mark
+    "risk_max_daily_drawdown": 0.05,   # halt at 5% below today's open
+    # Selling everything is itself a large, irreversible action, so a halt
+    # does not liquidate unless this is explicitly turned on.
+    "risk_flatten_on_halt": False,
+    "risk_state_path": None,           # defaults under data_cache_dir/execution
+    # Scheduled runner. Off by default: enabling it is what turns the
+    # framework into something that trades without a human present.
+    "schedule_enabled": False,
+    "schedule_cron": "30 13 * * 1-5",  # 13:30 UTC weekdays (pre-US-open)
+    "schedule_timezone": "UTC",
+    "watchlist_path": None,            # defaults under data_cache_dir
+    "run_history_path": None,          # defaults under data_cache_dir
+    # Bounds the cost and duration of one scheduled pass. A full analysis is
+    # many LLM calls per ticker, so this is a spend limit as much as a time one.
+    "run_max_tickers": 10,
     "benchmark_map": {
         ".NS":  "^NSEI",    # NSE India (Nifty 50)
         ".BO":  "^BSESN",   # BSE India (Sensex)

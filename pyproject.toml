@@ -32,6 +32,21 @@ dependencies = [
     "yfinance>=0.2.63",
 ]
 
+[project.optional-dependencies]
+# Broker execution. Kept optional so the research framework installs and
+# tests without a trading SDK present.
+execution = [
+    "alpaca-py>=0.42.0",
+]
+# Control API + cron scheduler, i.e. everything the deployed bot needs beyond
+# the research framework itself.
+server = [
+    "alpaca-py>=0.42.0",
+    "apscheduler>=3.11.0",
+    "fastapi>=0.120.0",
+    "uvicorn[standard]>=0.38.0",
+]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 

@@ -1,6 +1,26 @@
 services:
+  # Control API + scheduler — the same image Railway runs. Use this to
+  # exercise the dashboard against a local backend before deploying.
+  server:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - TRADINGAGENTS_CACHE_DIR=/data/cache
+      - TRADINGAGENTS_RESULTS_DIR=/data/logs
+      - TRADINGAGENTS_MEMORY_LOG_PATH=/data/memory/trading_memory.md
+    ports:
+      - "8000:8000"
+    volumes:
+      - tradingagents_server_data:/data
+    profiles:
+      - server
+
+  # Interactive CLI. Same image as the server, with the command overridden —
+  # the image defaults to the API so hosted platforms get the right process.
   tradingagents:
     build: .
+    command: ["tradingagents", "analyze"]
     env_file:
       - .env
     volumes:
@@ -17,6 +37,7 @@ services:
 
   tradingagents-ollama:
     build: .
+    command: ["tradingagents", "analyze"]
     env_file:
       - .env
     environment:
@@ -32,4 +53,5 @@ services:
 
 volumes:
   tradingagents_data:
+  tradingagents_server_data:
   ollama_data:

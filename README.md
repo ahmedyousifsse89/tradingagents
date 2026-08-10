@@ -133,6 +133,15 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+One image serves both entry points. Its **default command is the control API**,
+because that is what a container platform runs when it builds this repo; the
+compose services above override the command to reach the interactive CLI. To
+run the CLI from the image directly, attach a terminal:
+
+```bash
+docker run -it --rm --env-file .env tradingagents tradingagents analyze
+```
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
@@ -233,6 +242,13 @@ TradingAgents persists two kinds of state across runs.
 
 The decision log is always on. Each completed run appends its decision to `~/.tradingagents/memory/trading_memory.md`. On the next run for the same ticker, TradingAgents fetches the realised return (raw and alpha vs SPY), generates a one-paragraph reflection, and injects the most recent same-ticker decisions plus recent cross-ticker lessons into the Portfolio Manager prompt, so each analysis carries forward what worked and what didn't.
 
+When a broker is attached, the realised return is measured from the price the
+account **actually filled at**, not from the closing price on the analysis
+date — so slippage and the gap between analysis and execution are part of what
+the agents learn from. Decisions that never traded (a Hold, or an order a guard
+rejected) are still graded, but the reflection prompt says the outcome is
+hypothetical so no execution lessons are drawn from a trade nobody made.
+
 Override the path with `TRADINGAGENTS_MEMORY_LOG_PATH`.
 
 ### Checkpoint resume
@@ -252,6 +268,256 @@ config["checkpoint_enabled"] = True
 ta = TradingAgentsGraph(config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 ```
+
+## Broker Execution (Alpaca)
+
+> **Trading real money is irreversible.** This layer can place live orders from
+> LLM-derived ratings. Run it against Alpaca's paper endpoint until you have
+> reviewed enough dry runs to trust the sizing, and treat every default below as
+> a floor for caution rather than a recommendation. The framework remains
+> research software and is [not financial, investment, or trading advice](https://tauric.ai/disclaimer/).
+
+`tradingagents.execution` turns the 5-tier rating from `.propagate()` into
+broker orders. Install the optional dependency:
+
+```bash
+pip install -e ".[execution]"
+```
+
+### How a rating becomes an order
+
+1. **Sizing.** Each rating maps to a target fraction of account equity —
+   Buy 8%, Overweight 4%, Hold (leave alone), Underweight 2%, Sell 0% by
+   default. Sizes are computed arithmetically; the Trader agent's free-text
+   `position_sizing` field is deliberately never parsed into share counts.
+2. **Reconciliation.** The engine compares target value against the position
+   Alpaca actually reports and orders only the difference. Re-running the same
+   ticker and date after a fill therefore produces no orders instead of
+   doubling the position.
+3. **Guards.** Blocked accounts, closed markets, dust-sized rebalances,
+   oversized orders, a daily order cap, and duplicate `client_order_id`s are
+   all rejected before submission. The same guards run in dry-run mode, so a
+   clean dry run is evidence about what a live run would do.
+4. **Journal.** Every intent — submitted, rejected, or dry-run — is appended to
+   `~/.tradingagents/cache/execution/journal.jsonl`.
+
+### Four switches guard real money
+
+Money can only move when **all** of these are set the permissive way:
+
+| Switch | Default | Effect |
+|---|---|---|
+| `execution_enabled` | `False` | Master switch; submission raises without it |
+| `execution_dry_run` | `True` | Plans and journals orders, never sends them |
+| `alpaca_live` | `False` | Selects the live endpoint over paper |
+| `TRADINGAGENTS_ALPACA_ALLOW_LIVE` | unset | Environment opt-in checked inside the broker |
+
+Credentials come from `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY`.
+
+### Usage
+
+```python
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.execution import ExecutionEngine, describe_results
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+config = DEFAULT_CONFIG.copy()
+ta = TradingAgentsGraph(config=config)
+_, rating = ta.propagate("NVDA", "2026-01-15")   # e.g. "Buy"
+
+# Dry run by default: plans and journals, submits nothing.
+engine = ExecutionEngine(config)
+results = engine.execute_decision("NVDA", rating, trade_date="2026-01-15")
+print(describe_results(results))
+```
+
+Rate several tickers in one pass so the gross-exposure cap sees the whole book:
+
+```python
+ratings = {t: ta.propagate(t, "2026-01-15")[1] for t in ("NVDA", "AMD", "TSLA")}
+results = engine.execute_ratings(ratings, trade_date="2026-01-15")
+```
+
+To submit against the **paper** account, set `execution_enabled=True` and
+`execution_dry_run=False`, leaving `alpaca_live` at `False`.
+
+Tune the caps in `default_config.py` or via `TRADINGAGENTS_MAX_POSITION_WEIGHT`,
+`TRADINGAGENTS_MAX_GROSS_EXPOSURE`, `TRADINGAGENTS_MIN_ORDER_NOTIONAL`, and
+`TRADINGAGENTS_MAX_ORDERS_PER_DAY`.
+
+### Portfolio context
+
+When a broker is passed to `TradingAgentsGraph(broker=...)`, live holdings,
+cash, and exposure are rendered into the Trader and Portfolio Manager prompts.
+The agents then know whether a name is already held, already at its cap, or not
+held at all — so "Hold, already at target" becomes an informed answer rather
+than a coincidence. This never affects order sizing; the reconciler owns that,
+arithmetically, from broker data. A broker outage degrades the prompt to empty
+rather than failing the run.
+
+### Kill switch
+
+The kill switch tracks an equity high-water mark and halts all trading when the
+account falls too far below it. Every order is rejected while halted, in
+dry-run mode too.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `risk_kill_switch_enabled` | `True` | Master switch for drawdown protection |
+| `risk_max_total_drawdown` | `0.15` | Halt at 15% below the all-time high-water mark |
+| `risk_max_daily_drawdown` | `0.05` | Halt at 5% below the current UTC day's open |
+| `risk_flatten_on_halt` | `False` | Whether a halt also liquidates every position |
+
+With `risk_flatten_on_halt` on, liquidation happens on the transition — at run
+start if the switch was already tripped, or the moment it trips mid-run, so an
+intraday collapse does not wait for the next scheduled pass.
+
+A tripped switch **never clears itself** — not on recovery, not on restart.
+Resuming is a human action (dashboard button or `KillSwitch.resume()`), and it
+rebases the high-water mark to current equity so the switch does not
+immediately re-trip on the drawdown it was just cleared for. State lives in
+`~/.tradingagents/cache/execution/risk_state.json`; a corrupt state file reads
+as halted rather than as permission to trade.
+
+## Running as a Bot
+
+> Everything below turns the framework into software that trades while nobody
+> is watching. Read the four switches above first, run in dry-run until the
+> journal shows orders you would have placed yourself, then paper, then live.
+
+`tradingagents.runner` adds unattended operation and `tradingagents.server`
+adds the HTTP control plane the dashboard talks to:
+
+```bash
+pip install -e ".[server]"
+```
+
+### The run cycle
+
+One pass does three things in order:
+
+1. **Kill switch first.** A halted account skips analysis entirely, so a halt
+   costs nothing in LLM spend.
+2. **Analyse every ticker.** A ticker that raises is recorded in the run's
+   `errors` and the pass continues — the other tickers have already been paid
+   for. When the watchlist is longer than `run_max_tickers`, each pass takes
+   the least recently analysed names, so the cap rotates coverage instead of
+   permanently starving the tail.
+3. **Execute once, as a batch.** All ratings go to the engine in a single call
+   so the gross-exposure cap sees the whole book instead of approving each name
+   in ignorance of the others.
+
+Only one run happens at a time. A scheduled fire landing on a run in progress
+is dropped, not queued: two concurrent passes would both read the same
+pre-trade positions and each size orders as if the other had not happened.
+
+```python
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.runner import TradingRunner
+
+runner = TradingRunner(DEFAULT_CONFIG.copy())
+runner.watchlist.save(["NVDA", "AMD", "TSLA"])
+record = runner.run_once()
+print(record.status, record.ratings)
+```
+
+### Scheduling
+
+```bash
+TRADINGAGENTS_SCHEDULE_ENABLED=true
+TRADINGAGENTS_SCHEDULE_CRON="30 13 * * 1-5"   # 13:30 UTC weekdays, pre-US-open
+TRADINGAGENTS_SCHEDULE_TIMEZONE=UTC
+TRADINGAGENTS_RUN_MAX_TICKERS=10              # cost and duration cap per pass
+```
+
+Missed fires coalesce into one run rather than stampeding the broker after an
+outage.
+
+### Control API
+
+`python -m tradingagents.server.main` serves the API and owns the scheduler
+thread in the same process, so scheduled and API-triggered runs contend for the
+same lock and can never overlap.
+
+`TRADINGAGENTS_API_TOKEN` is required — the API can place trades and refuses to
+start without it. Every route except `/health` needs `Authorization: Bearer …`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness probe, unauthenticated, exposes nothing |
+| GET | `/api/status` | Mode, account, kill switch, next scheduled run |
+| GET | `/api/positions` | Open positions with unrealised P&L |
+| GET/PUT | `/api/watchlist` | Read or replace the watchlist |
+| DELETE | `/api/watchlist/{ticker}` | Remove one ticker |
+| GET/POST | `/api/runs` | Run history, or trigger a run (202; 409 if busy) |
+| GET | `/api/runs/{run_id}` | One run with decisions and orders |
+| GET | `/api/orders` | The order journal |
+| GET | `/api/risk` | Kill-switch state |
+| POST | `/api/risk/halt` · `/api/risk/resume` | Manual halt and resume |
+| POST | `/api/flatten` | Close all positions; body must be `{"confirm":"FLATTEN"}` |
+
+## Deploying
+
+The bot runs on Railway; the dashboard runs on Vercel. They are separate
+deploys sharing one secret.
+
+### 1. Railway (the bot)
+
+Deploy this repository. The root `Dockerfile` builds one image whose default
+command is the control API, so whichever way Railway resolves the build — from
+`railway.json` or by auto-detecting the Dockerfile — the service comes up as
+the bot. `railway.json` also sets the `/health` check.
+
+If a deploy's logs show the CLI's welcome banner followed by `Aborted.`, the
+service is running `tradingagents` instead of the API. Clear any custom start
+command in **Settings → Deploy**, and check **Settings → Build** points at
+`Dockerfile` (not a stale `Dockerfile.server`).
+
+**Attach a volume mounted at `/data`.** Without it the container filesystem is
+ephemeral: the order journal, run history, watchlist, decision memory, and the
+kill switch's high-water mark all reset on every redeploy, and a halted bot
+would come back armed.
+
+**Keep replicas at 1.** Each replica runs its own scheduler and its own
+in-process lock, so two replicas means two runs per cron tick against one
+account.
+
+Set the service variables from [`.env.server.example`](.env.server.example). At
+minimum: an LLM provider key, `TRADINGAGENTS_API_TOKEN`, `ALPACA_API_KEY_ID`,
+and `ALPACA_API_SECRET_KEY`. Leave every execution gate at its default for the
+first deploy.
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))'   # API token
+```
+
+### 2. Vercel (the dashboard)
+
+Import the same repository with **Root Directory** set to `web`, then set the
+four variables in [`web/.env.example`](web/.env.example):
+`TRADINGAGENTS_API_URL` (the Railway URL), `TRADINGAGENTS_API_TOKEN` (identical
+to Railway's), `DASHBOARD_PASSWORD`, and `SESSION_SECRET`.
+
+None of them are `NEXT_PUBLIC_`. The browser calls same-origin proxy routes
+that attach the bearer token server-side, so the token never reaches the client
+and there is no CORS to configure. See [`web/README.md`](web/README.md).
+
+### 3. Going live, in order
+
+1. Deploy with the defaults. Add tickers, hit **Run now**, and read the journal
+   — every intent is recorded with the size it would have used.
+2. When the dry-run orders look like orders you would have placed, set
+   `TRADINGAGENTS_EXECUTION_ENABLED=true` and
+   `TRADINGAGENTS_EXECUTION_DRY_RUN=false`. This trades the **paper** account.
+3. Turn on the scheduler and leave it on paper for as long as it takes to see
+   it behave across a full cycle.
+4. Only then set `TRADINGAGENTS_ALPACA_LIVE=true` **and**
+   `TRADINGAGENTS_ALPACA_ALLOW_LIVE=true`. Both are required; either one alone
+   keeps you on paper.
+
+Running costs are dominated by LLM calls: one pass is a full multi-agent
+analysis per ticker, so `TRADINGAGENTS_RUN_MAX_TICKERS` and the cron frequency
+are your spend controls.
 
 ## Contributing
 
