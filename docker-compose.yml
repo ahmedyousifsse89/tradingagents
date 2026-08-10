@@ -2,9 +2,7 @@ services:
   # Control API + scheduler — the same image Railway runs. Use this to
   # exercise the dashboard against a local backend before deploying.
   server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
+    build: .
     env_file:
       - .env
     environment:
@@ -18,8 +16,11 @@ services:
     profiles:
       - server
 
+  # Interactive CLI. Same image as the server, with the command overridden —
+  # the image defaults to the API so hosted platforms get the right process.
   tradingagents:
     build: .
+    command: ["tradingagents", "analyze"]
     env_file:
       - .env
     volumes:
@@ -36,6 +37,7 @@ services:
 
   tradingagents-ollama:
     build: .
+    command: ["tradingagents", "analyze"]
     env_file:
       - .env
     environment:

@@ -57,7 +57,7 @@ Breaking changes within the 0.x line are called out explicitly.
   watchlist CRUD, run history with full decisions, the order journal, manual
   run triggers, halt/resume, and a confirmation-gated flatten. Bearer-token
   auth is mandatory: the API refuses to start without `TRADINGAGENTS_API_TOKEN`.
-- **Next.js dashboard (`web/`)** for Vercel, and `Dockerfile.server` +
+- **Next.js dashboard (`web/`)** for Vercel, and a container image +
   `railway.json` for Railway. The dashboard reaches the bot only through
   server-side proxy routes, so the API token never enters the browser bundle
   and no CORS configuration is required.
@@ -95,6 +95,14 @@ Breaking changes within the 0.x line are called out explicitly.
   `history.save` in `run_once`'s `finally` block propagated out, which for a
   scheduled fire would kill the APScheduler job and silently stop all future
   runs.
+- **Hosted deploys started the interactive CLI.** The root `Dockerfile`'s
+  entrypoint was `tradingagents`, so a platform that auto-detects the
+  Dockerfile — rather than reading `railway.json`'s `Dockerfile.server` path —
+  came up printing the welcome banner and dying on the first prompt with a
+  bare `Aborted.`, which looks like a crash and is not one. There is now one
+  image whose default command is the control API, with the CLI reachable by
+  overriding the command. `tradingagents analyze` also detects a missing TTY
+  and says what to run instead.
 - **Unanchored `lib/` and `build/` in `.gitignore`** matched at any depth,
   which silently excluded `web/lib/` from commits. Anchored to the repo root.
 

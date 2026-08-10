@@ -1,5 +1,6 @@
 from typing import Optional
 import datetime
+import sys
 import typer
 import questionary
 from pathlib import Path
@@ -974,7 +975,39 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
+def require_interactive_terminal():
+    """Fail with an actionable message when there is no terminal to prompt on.
+
+    Without this, running the CLI on a container platform prints the welcome
+    banner and then dies on the first prompt with a bare "Aborted." — which
+    reads like a crash. The usual cause is a hosted deploy running the CLI
+    when it meant to run the control API.
+    """
+    if sys.stdin.isatty():
+        return
+
+    console.print(
+        Panel(
+            "[bold red]No interactive terminal attached.[/bold red]\n\n"
+            "`tradingagents analyze` is interactive and cannot run without a TTY.\n\n"
+            "If this is a hosted deployment (Railway, Fly, Render, Kubernetes), it "
+            "is almost certainly meant to be running the control API instead:\n\n"
+            "  [cyan]python -m tradingagents.server.main[/cyan]\n\n"
+            "That is the image's default command, so an override or a stale "
+            "Dockerfile path is what put the CLI here.\n\n"
+            "To run the CLI in Docker, attach a terminal:\n"
+            "  [cyan]docker run -it --rm --env-file .env tradingagents "
+            "tradingagents analyze[/cyan]",
+            title="Cannot start",
+            border_style="red",
+        )
+    )
+    raise typer.Exit(code=1)
+
+
 def run_analysis(checkpoint: bool = False):
+    require_interactive_terminal()
+
     # First get all user selections
     selections = get_user_selections()
 

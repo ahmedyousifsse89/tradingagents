@@ -133,6 +133,15 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+One image serves both entry points. Its **default command is the control API**,
+because that is what a container platform runs when it builds this repo; the
+compose services above override the command to reach the interactive CLI. To
+run the CLI from the image directly, attach a terminal:
+
+```bash
+docker run -it --rm --env-file .env tradingagents tradingagents analyze
+```
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
@@ -454,8 +463,15 @@ deploys sharing one secret.
 
 ### 1. Railway (the bot)
 
-Deploy this repository — `railway.json` selects `Dockerfile.server` and health
-checks `/health`.
+Deploy this repository. The root `Dockerfile` builds one image whose default
+command is the control API, so whichever way Railway resolves the build — from
+`railway.json` or by auto-detecting the Dockerfile — the service comes up as
+the bot. `railway.json` also sets the `/health` check.
+
+If a deploy's logs show the CLI's welcome banner followed by `Aborted.`, the
+service is running `tradingagents` instead of the API. Clear any custom start
+command in **Settings → Deploy**, and check **Settings → Build** points at
+`Dockerfile` (not a stale `Dockerfile.server`).
 
 **Attach a volume mounted at `/data`.** Without it the container filesystem is
 ephemeral: the order journal, run history, watchlist, decision memory, and the
