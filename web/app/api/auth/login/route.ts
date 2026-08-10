@@ -34,8 +34,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "incorrect password" }, { status: 401 });
   }
 
+  let session: ReturnType<typeof createSession>;
+  try {
+    session = createSession();
+  } catch (error) {
+    // Same reasoning as the passwordMatches catch above: a misconfigured
+    // SESSION_SECRET must not look like a wrong password. Rate limit stays
+    // un-reset here (the password check already passed, so consuming
+    // another attempt on a config error is not the resource we're guarding).
+    return NextResponse.json({ detail: (error as Error).message }, { status: 500 });
+  }
+
   resetRateLimit(key);
-  const session = createSession();
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, session.value, {
     httpOnly: true,
